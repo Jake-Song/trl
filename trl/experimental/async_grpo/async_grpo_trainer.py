@@ -300,7 +300,11 @@ class AsyncGRPOTrainer(_BaseTrainer):
 
         # Model
         model_name = model
-        model = AutoModelForCausalLM.from_pretrained(model, device_map=None, dtype=torch.float32)
+        model_init_kwargs = self.args.model_init_kwargs or {}
+        model_init_kwargs.setdefault("dtype", torch.float32)
+        # Distributed training requires device_map=None
+        model_init_kwargs["device_map"] = None
+        model = AutoModelForCausalLM.from_pretrained(model, **model_init_kwargs)
 
         if self.args.use_liger_kernel:
             raise NotImplementedError("`use_liger_kernel` is not supported yet.")

@@ -297,6 +297,8 @@ class AsyncGRPOTrainer(_BaseTrainer):
         self.epsilon_low = self.args.epsilon
         self.epsilon_high = self.args.epsilon_high
         self.temperature = self.args.temperature
+        self.importance_sampling_level = self.args.importance_sampling_level
+        self.loss_type = self.args.loss_type
 
         # Model
         model_name = model
@@ -480,21 +482,42 @@ class AsyncGRPOTrainer(_BaseTrainer):
         old_log_probs = old_log_probs[:, 1:]
         advantages = advantages.unsqueeze(1)
         log_ratio = log_probs - old_log_probs
+        # Per-token ratio, kept for the metrics block below regardless of IS level.
         ratio = torch.exp(log_ratio)
-        clipped = torch.clamp(ratio, 1 - self.epsilon_low, 1 + self.epsilon_high)
-        per_token_loss = -torch.min(ratio * advantages, clipped * advantages)
 
-        # DDP/FSDP averages gradients across ranks (world_size).
-        # To get correct per-token normalization we scale by 1/tokens_per_rank
-        # = world_size / global_n_tokens, so after DDP averaging the effective
-        loss = (per_token_loss * completion_mask).sum()
-        global_n_tokens = inputs["global_n_tokens"][0]
-        world_size = self.accelerator.num_processes
-        tokens_per_rank = (global_n_tokens / world_size).clamp(min=1.0)
-        loss = loss / tokens_per_rank.to(torch.float32)
-        # For DAPO, we would scale like this instead:
-        # loss = loss / max(per_token_loss.size(0), 1)
-        loss = loss / self.current_gradient_accumulation_steps
+        # Importance sampling weight: per-token ("token") or one length-normalized
+        # ratio per sequence ("sequence", i.e. GSPO). Sequence-level coef_1 is (B, 1)
+        # and broadcasts across tokens in the loss below.
+        if self.importance_sampling_level == "token":
+            log_importance_weights = log_ratio
+        elif self.importance_sampling_level == "sequence":
+            log_importance_weights = (log_ratio * completion_mask).sum(-1) / completion_mask.sum(-1).clamp(min=1.0)
+            log_importance_weights = log_importance_weights.unsqueeze(-1)
+        else:
+            raise ValueError(
+                f"Unknown importance sampling level: {self.importance_sampling_level}. Possible values are 'token' "
+                "and 'sequence'."
+            )
+        coef_1 = torch.exp(log_importance_weights)
+        coef_2 = torch.clamp(coef_1, 1 - self.epsilon_low, 1 + self.epsilon_high)
+        per_token_loss = -torch.min(coef_1 * advantages, coef_2 * advantages)
+
+        if self.loss_type == "grpo":
+            # Normalize per sequence (mean over tokens), then average over sequences.
+            loss = ((per_token_loss * completion_mask).sum(-1) / completion_mask.sum(-1).clamp(min=1.0)).mean()
+            loss = loss / self.current_gradient_accumulation_steps
+        elif self.loss_type == "dapo":
+            # Normalize by the number of active tokens in the global accumulated batch.
+            # DDP/FSDP averages gradients across ranks (world_size), so scale by
+            # 1/tokens_per_rank = world_size / global_n_tokens to recover the global mean.
+            loss = (per_token_loss * completion_mask).sum()
+            global_n_tokens = inputs["global_n_tokens"][0]
+            world_size = self.accelerator.num_processes
+            tokens_per_rank = (global_n_tokens / world_size).clamp(min=1.0)
+            loss = loss / tokens_per_rank.to(torch.float32)
+            loss = loss / self.current_gradient_accumulation_steps
+        else:
+            raise ValueError(f"Unknown loss type: {self.loss_type}. Possible values are 'grpo' and 'dapo'.")
 
         with torch.no_grad():
             valid_mask = completion_mask > 0

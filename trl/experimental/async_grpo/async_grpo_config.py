@@ -178,6 +178,23 @@ class AsyncGRPOConfig(_BaseConfig):
         default=0.2,
         metadata={"help": "Upper-bound epsilon value for clipping."},
     )
+    importance_sampling_level: str = field(
+        default="token",
+        metadata={
+            "help": "Controls whether importance sampling ratios are computed at the `'token'` or `'sequence'` level. "
+            "`'token'` keeps the raw per-token log-probability ratios (one weight per token). `'sequence'` averages "
+            "the log-probability ratios across valid tokens to produce a single ratio per sequence (GSPO)."
+        },
+    )
+    loss_type: str = field(
+        default="dapo",
+        metadata={
+            "help": "Specifies the loss formulation to use. Supported values are `'grpo'` and `'dapo'`. "
+            "`'grpo'`: aggregates token-level losses by normalizing over sequence length (then averaging over "
+            "sequences). `'dapo'` (default): aggregates token-level losses by normalizing with the number of active "
+            "tokens in the global accumulated batch, eliminating length bias."
+        },
+    )
 
     # Parameters that control the async rollout pipeline
     max_inflight_tasks: int = field(

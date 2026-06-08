@@ -522,7 +522,7 @@ class AsyncGRPOTrainer(_BaseTrainer):
             world_size = self.accelerator.num_processes
             tokens_per_rank = (global_n_tokens / world_size).clamp(min=1.0)
             loss = loss / tokens_per_rank.to(torch.float32)
-            loss = loss / self.current_gradient_accumulation_steps
+            
         else:
             raise ValueError(f"Unknown loss type: {self.loss_type}. Possible values are 'grpo' and 'dapo'.")
 

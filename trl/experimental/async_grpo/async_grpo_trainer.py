@@ -485,14 +485,21 @@ class AsyncGRPOTrainer(_BaseTrainer):
         # Per-token ratio, kept for the metrics block below regardless of IS level.
         ratio = torch.exp(log_ratio)
 
-        # Importance sampling weight: per-token ("token") or one length-normalized
-        # ratio per sequence ("sequence", i.e. GSPO). Sequence-level coef_1 is (B, 1)
-        # and broadcasts across tokens in the loss below.
+        # Importance sampling weight: per-token ("token"), one length-normalized
+        # ratio per sequence ("sequence", i.e. GSPO), or a per-token weight anchored to a
+        # stop-gradient sequence ratio ("sequence_token", i.e. GSPO-token). Sequence-level
+        # coef_1 is (B, 1) and broadcasts across tokens in the loss below; "token" and
+        # "sequence_token" coef_1 are (B, T).
         if self.importance_sampling_level == "token":
             log_importance_weights = log_ratio
         elif self.importance_sampling_level == "sequence":
             log_importance_weights = (log_ratio * completion_mask).sum(-1) / completion_mask.sum(-1).clamp(min=1.0)
             log_importance_weights = log_importance_weights.unsqueeze(-1)
+        elif self.importance_sampling_level == "sequence_token":
+            # GSPO-token: sg[si(θ)] * πθ(yi,t)/sg[πθ(yi,t)]
+            seq_level_log_weight = (log_ratio * completion_mask).sum(-1) / completion_mask.sum(-1).clamp(min=1.0)
+            seq_level_log_weight = seq_level_log_weight.detach().unsqueeze(-1)  # Stop gradient
+            log_importance_weights = log_probs - log_probs.detach() + seq_level_log_weight
         else:
             raise ValueError(
                 f"Unknown importance sampling level: {self.importance_sampling_level}. Possible values are 'token' "

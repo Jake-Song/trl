@@ -181,9 +181,11 @@ class AsyncGRPOConfig(_BaseConfig):
     importance_sampling_level: str = field(
         default="token",
         metadata={
-            "help": "Controls whether importance sampling ratios are computed at the `'token'` or `'sequence'` level. "
-            "`'token'` keeps the raw per-token log-probability ratios (one weight per token). `'sequence'` averages "
-            "the log-probability ratios across valid tokens to produce a single ratio per sequence (GSPO)."
+            "help": "Controls whether importance sampling ratios are computed at the `'token'`, `'sequence'`, or "
+            "`'sequence_token'` level. `'token'` keeps the raw per-token log-probability ratios (one weight per token). "
+            "`'sequence'` averages the log-probability ratios across valid tokens to produce a single ratio per "
+            "sequence (GSPO). `'sequence_token'` keeps a per-token weight anchored to a stop-gradient sequence ratio "
+            "(GSPO-token)."
         },
     )
     loss_type: str = field(

@@ -584,7 +584,7 @@ class AsyncGRPOTrainer(_BaseTrainer):
             if self._train_tokens_start_time is not None:
                 train_elapsed = now - self._train_tokens_start_time
                 if train_elapsed > 0:
-                    self._metrics["train"]["training_tok/s"].append(global_n_tokens.item() / train_elapsed)
+                    self._metrics["train"]["training_tok/s"].append(inputs["global_n_tokens"][0].item() / train_elapsed)
             self._train_tokens_start_time = now
 
             self._metrics["train"]["forward_time_s"].append(self._last_forward_time_s)

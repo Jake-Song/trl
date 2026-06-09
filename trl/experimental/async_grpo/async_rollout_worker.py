@@ -103,6 +103,7 @@ class AsyncRolloutWorker:
         server_timeout: float = 240.0,
         chat_template_kwargs: dict[str, Any] | None = None,
         max_tool_calling_iterations: int | None = None,
+        mask_think_tokens: bool = False,
         log_completions: bool = False,
         num_completions_to_print: int = 3,
         weight_names: list[str] | None = None,
@@ -168,6 +169,15 @@ class AsyncRolloutWorker:
         self.num_completions_to_print = num_completions_to_print
         self.tokenizer = processing_class
         self.tokenizer = add_response_schema(self.tokenizer)
+        self.mask_think_tokens = mask_think_tokens
+        if mask_think_tokens:
+            self.think_open_id = self.tokenizer.convert_tokens_to_ids("<think>")
+            self.think_close_id = self.tokenizer.convert_tokens_to_ids("</think>")
+            if self.tokenizer.unk_token_id in (self.think_open_id, self.think_close_id):
+                raise ValueError(
+                    "mask_think_tokens=True but the tokenizer has no `<think>`/`</think>` tokens. This option is only "
+                    "supported for reasoning models (e.g. Qwen3)."
+                )
         # In multi-turn training, the chat template *must* be prefix-preserving. If the tokenizer's original template
         # isn't, we replace it at initialization with a training-safe, prefix-preserving template.
         if self.tools and not is_chat_template_prefix_preserving(self.tokenizer):
@@ -547,6 +557,24 @@ class AsyncRolloutWorker:
                 yield group_id, row
             group_id += 1
 
+    def _turn_mask(self, turn_ids: list[int]) -> list[int]:
+        """
+        Per-token trainability mask for one assistant turn: 1 everywhere, 0 over the first complete
+        `<think>...</think>` span (delimiters included) when `mask_think_tokens` is enabled. If no closed think block is
+        found (e.g. truncated generation), the whole turn stays trainable.
+        """
+        mask = [1] * len(turn_ids)
+        if not self.mask_think_tokens:
+            return mask
+        try:
+            open_idx = turn_ids.index(self.think_open_id)
+            close_idx = turn_ids.index(self.think_close_id, open_idx + 1)
+        except ValueError:
+            return mask
+        for i in range(open_idx, close_idx + 1):
+            mask[i] = 0
+        return mask
+
     async def _generate_one(
         self, prompt: Messages, tool_dict: dict[str, Callable]
     ) -> tuple[list[dict[str, str]], list[int], list[float], list[int], int, int]:
@@ -569,7 +597,7 @@ class AsyncRolloutWorker:
             completion.append(assistant_message)
             completion_ids.extend(turn_ids)
             completion_logprobs.extend(turn_logprobs)
-            tool_mask.extend([1] * len(turn_ids))
+            tool_mask.extend(self._turn_mask(turn_ids))
             tool_calls = assistant_message.get("tool_calls")
             if tool_calls is None or (max_iterations is not None and iteration_num >= max_iterations):
                 return completion, completion_ids, completion_logprobs, tool_mask, tool_call_count, tool_failure_count

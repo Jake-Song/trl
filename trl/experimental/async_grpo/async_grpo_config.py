@@ -49,6 +49,10 @@ class AsyncGRPOConfig(_BaseConfig):
             Maximum number of tool-calling turns when training an agent. If `None`, there is no limit and generation
             stops when the model generates a response turn with no tool calls or when the total response length reaches
             `max_completion_length`.
+        mask_think_tokens (`bool`, *optional*, defaults to `False`):
+            Whether to exclude `<think>...</think>` reasoning spans (delimiters included) from the loss by zeroing them
+            in the completion mask. The reasoning is still generated but not directly reinforced. Only meaningful for
+            reasoning models that emit `<think>`/`</think>` tokens (e.g. Qwen3).
 
         > Parameters that control the vLLM server
 
@@ -149,6 +153,14 @@ class AsyncGRPOConfig(_BaseConfig):
             "help": "Maximum number of tool-calling turns when training an agent. If `None`, there is no limit and "
             "generation stops when the model generates a response turn with no tool calls or when the total response "
             "length reaches `max_completion_length`."
+        },
+    )
+    mask_think_tokens: bool = field(
+        default=False,
+        metadata={
+            "help": "Whether to exclude `<think>...</think>` reasoning spans (delimiters included) from the loss by "
+            "zeroing them in the completion mask. The reasoning is still generated but not directly reinforced. Only "
+            "meaningful for reasoning models that emit `<think>`/`</think>` tokens (e.g. Qwen3)."
         },
     )
 

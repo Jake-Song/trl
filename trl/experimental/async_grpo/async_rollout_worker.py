@@ -99,6 +99,7 @@ class AsyncRolloutWorker:
         vllm_server_url: str = "http://localhost:8000",
         max_tokens: int = 32,
         temperature: float = 1.0,
+        thinking_token_budget: int | None = None,
         request_timeout: int = 120,
         server_timeout: float = 240.0,
         chat_template_kwargs: dict[str, Any] | None = None,
@@ -162,6 +163,7 @@ class AsyncRolloutWorker:
         self.model_update_group = None
         self.max_tokens = max_tokens
         self.temperature = temperature
+        self.thinking_token_budget = thinking_token_budget
         self.request_timeout = request_timeout
         self.server_timeout = server_timeout
         self.chat_template_kwargs = chat_template_kwargs or {}
@@ -687,6 +689,8 @@ class AsyncRolloutWorker:
             "return_token_ids": True,
             "logprobs": 0,
         }
+        if self.thinking_token_budget is not None:
+            payload["thinking_token_budget"] = self.thinking_token_budget
         while True:
             try:
                 output = await self._post("/v1/completions", payload, self.request_timeout)

@@ -393,6 +393,7 @@ class AsyncGRPOTrainer(_BaseTrainer):
                     vllm_server_url=self.args.vllm_server_base_url,
                     max_tokens=self.args.max_completion_length,
                     temperature=self.args.temperature,
+                    thinking_token_budget=self.args.thinking_token_budget,
                     request_timeout=self.args.request_timeout,
                     server_timeout=self.args.vllm_server_timeout,
                     chat_template_kwargs=self.args.chat_template_kwargs,

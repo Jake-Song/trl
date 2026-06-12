@@ -140,6 +140,14 @@ class AsyncGRPOConfig(_BaseConfig):
         default=1.0,
         metadata={"help": "Temperature for sampling. The higher the temperature, the more random the completions."},
     )
+    thinking_token_budget: int | None = field(
+        default=None,
+        metadata={
+            "help": "Maximum number of thinking tokens per generation turn. When reached, vLLM forces the reasoning "
+            "block to close so the model produces a visible answer. Requires the vLLM server to be launched with "
+            "`--reasoning-config`."
+        },
+    )
     chat_template_kwargs: dict | None = field(
         default=None,
         metadata={

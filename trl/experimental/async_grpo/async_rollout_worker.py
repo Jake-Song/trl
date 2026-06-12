@@ -670,12 +670,19 @@ class AsyncRolloutWorker:
             n_calls += 1
             function = tool_call["function"]
             name = function["name"]
-            try:
-                arguments = function.get("arguments", {})
-                result = tool_dict[name](**arguments)
-            except Exception as error:
+            if name not in tool_dict:
                 n_failures += 1
-                result = {"error": str(error)}
+                result = {
+                    "error": f"Unknown tool '{name}'. The only tools you can call directly are "
+                    f"{sorted(tool_dict)}."
+                }
+            else:
+                try:
+                    arguments = function.get("arguments", {})
+                    result = tool_dict[name](**arguments)
+                except Exception as error:
+                    n_failures += 1
+                    result = {"error": str(error)}
             tool_messages.append({"role": "tool", "name": name, "content": str(result)})
         return tool_messages, n_calls, n_failures
 

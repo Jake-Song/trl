@@ -154,8 +154,8 @@ class AsyncRolloutWorker:
         self._sync_tool_dicts = [{} for _ in range(self.max_inflight_tasks)]
         for i in range(self.max_inflight_tasks):
             for tool in base_tools + (environment_methods[i] if self.environments is not None else []):
-                if inspect.iscoroutinefunction(tool):
-                    raise ValueError("Asynchronous tools are not supported in AsyncRolloutWorker yet.")
+                # Async (coroutine) tools are allowed; a subclass that registers them
+                # must override _execute_tool_calls to await them (see AWMRolloutWorker).
                 self._sync_tool_dicts[i][tool.__name__] = tool
         self.tools = base_tools + (environment_methods[0] if self.environments is not None else [])
 
@@ -397,7 +397,10 @@ class AsyncRolloutWorker:
                     slot = free_slots.pop()
                     if self.environments is not None:
                         # Current assumption: reset side effects matter, return value is ignored.
-                        self.environments[slot].reset(**row)
+                        # Envs may expose either a sync or an async (coroutine) reset.
+                        reset_result = self.environments[slot].reset(**row)
+                        if inspect.isawaitable(reset_result):
+                            await reset_result
 
                     logger.info(f"[slot] assigned slot={slot} group={group_id} free_after={len(free_slots)}")
                     task = asyncio.create_task(

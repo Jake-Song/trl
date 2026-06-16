@@ -143,6 +143,8 @@ class AsyncRolloutWorker:
                 for name, member in inspect.getmembers(environment, predicate=inspect.ismethod):
                     if name == "reset":
                         has_reset = True
+                    elif name == "close":
+                        pass  # lifecycle hook (closed at worker shutdown), not a model-callable tool
                     elif not name.startswith("_"):
                         environment_methods[i].append(member)
                 if not has_reset:
@@ -266,10 +268,28 @@ class AsyncRolloutWorker:
             logger.info(
                 f"vllm worker started: num_generations={self.num_generations}, max_inflight_tasks={self.max_inflight_tasks}"
             )
-            await asyncio.gather(
-                asyncio.create_task(self._generate_loop(stop_event=stop_event)),
-                asyncio.create_task(self._score_loop(stop_event=stop_event)),
-            )
+            try:
+                await asyncio.gather(
+                    asyncio.create_task(self._generate_loop(stop_event=stop_event)),
+                    asyncio.create_task(self._score_loop(stop_event=stop_event)),
+                )
+            finally:
+                await self._close_environments()
+
+    async def _close_environments(self) -> None:
+        # Close env clients while this loop is still alive. Async clients (e.g. httpx)
+        # hold connections bound to the loop; if left to GC after loop.close(), their
+        # finalizers call loop.call_soon() on the closed loop -> "Event loop is closed".
+        for env in self.environments or []:
+            close = getattr(env, "close", None)
+            if close is None:
+                continue
+            try:
+                result = close()
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                logger.warning("environment close failed during shutdown", exc_info=True)
 
     def start(self) -> None:
         # Reset so a long __init__→start() gap doesn't immediately trip check_health.

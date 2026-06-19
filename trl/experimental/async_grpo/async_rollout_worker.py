@@ -415,16 +415,16 @@ class AsyncRolloutWorker:
                         logger.debug(f"Started group {group_id}; pending_groups={len(pending_groups)}")
 
                     slot = free_slots.pop()
-                    if self.environments is not None:
-                        # Current assumption: reset side effects matter, return value is ignored.
-                        # Envs may expose either a sync or an async (coroutine) reset.
-                        reset_result = self.environments[slot].reset(**row)
-                        if inspect.isawaitable(reset_result):
-                            await reset_result
-
                     logger.info(f"[slot] assigned slot={slot} group={group_id} free_after={len(free_slots)}")
+                    # Reset runs inside the task (not awaited here) so async resets across free slots overlap
+                    # instead of running one at a time in this serial fill loop.
                     task = asyncio.create_task(
-                        self._generate_one(pending_groups[group_id].prompt, tool_dict=self._sync_tool_dicts[slot])
+                        self._reset_and_generate_one(
+                            pending_groups[group_id].prompt,
+                            tool_dict=self._sync_tool_dicts[slot],
+                            env=self.environments[slot] if self.environments is not None else None,
+                            reset_kwargs=row,
+                        )
                     )
                     inflight_tasks[task] = (group_id, slot)
 
@@ -599,6 +599,21 @@ class AsyncRolloutWorker:
         for i in range(open_idx, close_idx + 1):
             mask[i] = 0
         return mask
+
+    async def _reset_and_generate_one(
+        self,
+        prompt: Messages,
+        tool_dict: dict[str, Callable],
+        env: object | None,
+        reset_kwargs: dict[str, Any],
+    ) -> tuple[list[dict[str, str]], list[int], list[float], list[int], int, int]:
+        if env is not None:
+            # Current assumption: reset side effects matter, return value is ignored.
+            # Envs may expose either a sync or an async (coroutine) reset.
+            reset_result = env.reset(**reset_kwargs)
+            if inspect.isawaitable(reset_result):
+                await reset_result
+        return await self._generate_one(prompt, tool_dict=tool_dict)
 
     async def _generate_one(
         self, prompt: Messages, tool_dict: dict[str, Callable]

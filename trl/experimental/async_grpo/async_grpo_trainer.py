@@ -94,6 +94,7 @@ class RolloutQueueDataset(torch.utils.data.IterableDataset):
         self.stale_after_s = stale_after_s
         self.max_staleness = max_staleness
         self.poll_interval_s = poll_interval_s
+        self.num_stale_dropped = 0
 
     def __iter__(self):
         while True:
@@ -112,6 +113,7 @@ class RolloutQueueDataset(torch.utils.data.IterableDataset):
 
             staleness = self.model_version_fn() - sample.model_version
             if staleness > self.max_staleness:
+                self.num_stale_dropped += 1
                 logger.info(f"dropping stale sample (staleness={staleness}, max={self.max_staleness})")
                 continue  # drop stale, pull next
 
@@ -422,6 +424,7 @@ class AsyncGRPOTrainer(_BaseTrainer):
                 stale_after_s=self.args.heartbeat_stale_after_s,
                 max_staleness=self.args.max_staleness,
             )
+            self._rollout_dataset = dataset
         else:
             dataset = _EmptyIterableDataset()
 
@@ -592,6 +595,12 @@ class AsyncGRPOTrainer(_BaseTrainer):
             self._metrics["train"]["forward_time_s"].append(self._last_forward_time_s)
             # NOTE: in dynamic mbs setup, we would need to agg across DP ranks.
             self._metrics["train"]["train_seq_len"].append(float(local_max_len))
+
+            # Stale samples are dropped while fetching batches on the main process (the only rank that
+            # iterates the rollout queue). Read-and-reset the counter to log drops attributed to this step.
+            if self.accelerator.is_main_process:
+                self._metrics["train"]["num_stale_dropped"].append(float(self._rollout_dataset.num_stale_dropped))
+                self._rollout_dataset.num_stale_dropped = 0
         return loss
 
     def log(self, logs: dict[str, float], start_time: float | None = None) -> None:

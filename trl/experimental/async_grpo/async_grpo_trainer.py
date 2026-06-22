@@ -78,6 +78,20 @@ class StepIntervalCallback(TrainerCallback):
             self.fn()
 
 
+class StepTimingCallback(TrainerCallback):
+    """Record the wall-clock duration of each optimization step."""
+
+    def __init__(self, record_fn):
+        self.record_fn = record_fn
+        self.started_at = 0.0
+
+    def on_step_begin(self, _args, _state, _control, **_kwargs):
+        self.started_at = time.monotonic()
+
+    def on_step_end(self, _args, _state, _control, **_kwargs):
+        self.record_fn(time.monotonic() - self.started_at)
+
+
 class RolloutQueueDataset(torch.utils.data.IterableDataset):
     def __init__(
         self,
@@ -414,6 +428,9 @@ class AsyncGRPOTrainer(_BaseTrainer):
 
         # Add callbacks
         self.add_callback(StepIntervalCallback(self._sync_weight, self.args.weight_sync_steps))
+        self.add_callback(
+            StepTimingCallback(lambda elapsed: self._metrics["train"]["training_step_seconds"].append(elapsed))
+        )
 
     def get_train_dataloader(self) -> DataLoader:
         if self.accelerator.is_main_process:

@@ -62,6 +62,7 @@ class RolloutGroup:
     tool_call_counts: list[int]
     tool_failure_counts: list[int]
     model_version: int
+    started_at: float
     queued_at: float = 0.0
 
 
@@ -410,6 +411,7 @@ class AsyncRolloutWorker:
                             tool_call_counts=[],
                             tool_failure_counts=[],
                             model_version=self.model_version,
+                            started_at=time.monotonic(),
                         )
                         pending_completed[group_id] = 0
                         logger.debug(f"Started group {group_id}; pending_groups={len(pending_groups)}")
@@ -494,7 +496,13 @@ class AsyncRolloutWorker:
             except asyncio.QueueFull:
                 pass
 
-    def _compute_rollout_metrics(self, samples: list[RolloutSample], scoring_time: float, wait_scoring: float) -> None:
+    def _compute_rollout_metrics(
+        self,
+        samples: list[RolloutSample],
+        scoring_time: float,
+        wait_scoring: float,
+        sampling_batch_seconds: float,
+    ) -> None:
         assert self._generation_start_time is not None, "generation_start_time init in run()"
         elapsed = time.monotonic() - self._generation_start_time
         generation_tok_per_sec = self._total_completion_tokens / elapsed if elapsed > 0 else 0.0
@@ -506,6 +514,7 @@ class AsyncRolloutWorker:
             sample.metrics["generation_tok_per_s"] = generation_tok_per_sec
             sample.metrics["scoring_time_ms"] = scoring_time_ms
             sample.metrics["wait_scoring_ms"] = wait_scoring_ms
+            sample.metrics["sampling_batch_seconds"] = sampling_batch_seconds
             sample.metrics["buffer_qsize"] = self.rollout_buffer.qsize()
 
         logger.info(
@@ -534,12 +543,13 @@ class AsyncRolloutWorker:
             t0 = time.monotonic()
             samples = await self._score_group(group)
             scoring_time = time.monotonic() - t0
+            sampling_batch_seconds = time.monotonic() - group.started_at
             logger.info(
                 f"[score] scored {len(samples)} samples in {scoring_time:.2f}s, "
                 f"buffer_qsize={self.rollout_buffer.qsize()}"
             )
 
-            self._compute_rollout_metrics(samples, scoring_time, wait_scoring)
+            self._compute_rollout_metrics(samples, scoring_time, wait_scoring, sampling_batch_seconds)
 
             if self.log_completions and samples:
                 print_prompt_completions_sample(

@@ -14,6 +14,8 @@
 
 import itertools
 import queue
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 import torch
@@ -21,7 +23,8 @@ from datasets import load_dataset
 from transformers import AutoTokenizer
 
 from trl.experimental.async_grpo import AsyncGRPOConfig, AsyncGRPOTrainer
-from trl.experimental.async_grpo.async_rollout_worker import RolloutSample
+from trl.experimental.async_grpo.async_grpo_trainer import StepTimingCallback
+from trl.experimental.async_grpo.async_rollout_worker import AsyncRolloutWorker, RolloutSample
 
 from ..testing_utils import TrlTestCase
 
@@ -95,6 +98,31 @@ class _StubRolloutWorker:
 
 
 class TestAsyncGRPOTrainer(TrlTestCase):
+    def test_rollout_timing_metric(self):
+        worker = object.__new__(AsyncRolloutWorker)
+        worker._generation_start_time = 10.0
+        worker._total_completion_tokens = 100
+        worker.rollout_buffer = queue.Queue()
+        sample = SimpleNamespace(metrics={})
+
+        with (
+            patch("trl.experimental.async_grpo.async_rollout_worker.time.monotonic", return_value=20.0),
+            patch("trl.experimental.async_grpo.async_rollout_worker.logger.info"),
+        ):
+            worker._compute_rollout_metrics([sample], scoring_time=1.0, wait_scoring=2.0, sampling_batch_seconds=3.0)
+
+        assert sample.metrics["sampling_batch_seconds"] == 3.0
+
+    def test_step_timing_callback(self):
+        recorded = []
+        callback = StepTimingCallback(recorded.append)
+
+        with patch("trl.experimental.async_grpo.async_grpo_trainer.time.monotonic", side_effect=[10.0, 12.5]):
+            callback.on_step_begin(None, None, None)
+            callback.on_step_end(None, None, None)
+
+        assert recorded == [2.5]
+
     def test_init_minimal(self):
         # Test that AsyncGRPOTrainer can be instantiated with only model, reward_model and train_dataset
         model_id = "trl-internal-testing/tiny-Qwen2ForCausalLM-2.5"
@@ -132,6 +160,7 @@ class TestAsyncGRPOTrainer(TrlTestCase):
         trainer.train()
 
         assert trainer.state.log_history[-1]["train_loss"] is not None
+        assert any(log.get("training_step_seconds", 0.0) > 0 for log in trainer.state.log_history)
 
         # Check that the params have changed
         for n, param in previous_trainable_params.items():

@@ -264,7 +264,12 @@ class AsyncRolloutWorker:
         self.model_version = model_version
 
     async def _run_loops(self, stop_event: asyncio.Event) -> None:
-        async with aiohttp.ClientSession() as session:
+        # Default TCPConnector caps the pool at 100 connections, which silently
+        # bottlenecks vLLM at Running:100/Waiting:0 no matter how high
+        # max_inflight_tasks goes. limit=0 removes the client-side cap so vLLM's
+        # --max-num-seqs becomes the real limiter.
+        connector = aiohttp.TCPConnector(limit=0)
+        async with aiohttp.ClientSession(connector=connector) as session:
             self.session = session
             logger.info(
                 f"vllm worker started: num_generations={self.num_generations}, max_inflight_tasks={self.max_inflight_tasks}"

@@ -238,6 +238,45 @@ class TestAsyncRolloutWorkerEnvironments(TrlTestCase):
         finally:
             loop._loop.close()
 
+    def test_async_reset_observation_folded_into_prompt(self):
+        # `reset()` may be a coroutine: _reset_and_generate_one awaits it inside the generation task and folds the
+        # returned observation into the last prompt message, same as a sync reset.
+        class VaultEnvironment:
+            async def reset(self, **kwargs):
+                return " Observation: the vault is locked."
+
+            def unlock(self, code: str) -> str:
+                """Try a code.
+
+                Args:
+                    code: Code to try.
+
+                Returns:
+                    The result.
+                """
+                return "wrong code"
+
+        loop = self._make_loop({"vault": VaultEnvironment})
+        seen_prompts = []
+
+        async def fake_generate_one(prompt, tool_dict, tools):
+            seen_prompts.append(prompt)
+            return [1, 2], [{"role": "assistant", "content": "ok"}], [3], [0.0], [1], 0, 0
+
+        loop._generate_one = fake_generate_one
+        row = {"prompt": [{"role": "user", "content": "Open the vault."}], "environment": "vault"}
+        environment = loop._environment_pool["vault"].pop()
+        try:
+            result = loop._loop.run_until_complete(
+                loop._reset_and_generate_one(row, environment, tool_dict={}, tools=[])
+            )
+        finally:
+            loop._loop.close()
+        prompt = result[0]
+        assert prompt == [{"role": "user", "content": "Open the vault. Observation: the vault is locked."}]
+        assert seen_prompts == [prompt]
+        assert result[1:] == ([1, 2], [{"role": "assistant", "content": "ok"}], [3], [0.0], [1], 0, 0)
+
 
 def _rollout_sample(length: int, advantage: float = 0.0, reward: float = 0.0) -> dict:
     # First token is a prompt token (completion_mask 0); the rest are completion tokens.

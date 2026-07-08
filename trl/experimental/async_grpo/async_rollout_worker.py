@@ -341,7 +341,7 @@ class _AsyncRolloutLoop:
     async def _generate_loop(self, stop_event: asyncio.Event) -> None:
         pending_groups: dict[int, RolloutGroup] = {}
         pending_completed: dict[int, int] = {}
-        inflight_tasks: dict[asyncio.Task, tuple[int, int, Any, object, Messages]] = {}
+        inflight_tasks: dict[asyncio.Task, tuple[int, int, Any, object]] = {}
         free_slots = set(range(self.max_inflight_tasks))
         work_iter = self._repeat_iterator()
 
@@ -364,34 +364,13 @@ class _AsyncRolloutLoop:
                         )
                     tools = self._env_tools[name] if self.environment_factories is not None else self.tools
                     # Draw a reusable environment instance for this rollout (creating one only if the pool is
-                    # exhausted); it is returned to the pool when the task completes. Reset it BEFORE building the
-                    # prompt and capture its initial observation (e.g. a task instruction). The reset() return was
-                    # previously discarded, so an environment_factory whose task lives in the observation (not the
-                    # dataset prompt) was generated against the bare prompt. Mirror GRPOTrainer: fold the observation
-                    # into the last prompt message. reset() may be stochastic, so this is done per generation (each
-                    # generation gets its own observation -> its own prompt and prompt_ids). `environment` is a control
-                    # field in multi-environment mode, so it is not forwarded to `reset`.
+                    # exhausted); it is returned to the pool when the task completes. The reset itself runs inside
+                    # the generation task (see _reset_and_generate_one), not in this serial slot-fill loop, so slow
+                    # or async resets across free slots overlap on the event loop instead of blocking dispatch.
                     environment = None
-                    observation = None
                     if self.environment_factories is not None:
                         pool = self._environment_pool[name]
                         environment = pool.pop() if pool else self.environment_factories[name]()
-                        reset_kwargs = (
-                            {k: v for k, v in row.items() if k != "environment"} if self._multi_environment else row
-                        )
-                        observation = environment.reset(**reset_kwargs)
-                    prompt = row["prompt"]
-                    if observation is not None:
-                        # Rebuild the last message instead of mutating in place (as GRPOTrainer does): the
-                        # same row is reused across the group's generations and across epochs. Normalize str vs
-                        # list (multimodal) content the same way GRPOTrainer does before concatenating.
-                        last = prompt[-1]
-                        content = last["content"]
-                        if isinstance(observation, list) and isinstance(content, str):
-                            content = [{"type": "text", "text": content}]
-                        if isinstance(observation, str) and isinstance(content, list):
-                            observation = [{"type": "text", "text": observation}]
-                        prompt = prompt[:-1] + [{**last, "content": content + observation}]
 
                     # Build this rollout's tool dict: the standalone tools plus the methods of its environment.
                     methods = []
@@ -423,8 +402,10 @@ class _AsyncRolloutLoop:
                         )
                         pending_completed[group_id] = 0
 
-                    task = asyncio.create_task(self._generate_one(prompt, tool_dict=tool_dict, tools=tools))
-                    inflight_tasks[task] = (group_id, slot, name, environment, prompt)
+                    task = asyncio.create_task(
+                        self._reset_and_generate_one(row, environment, tool_dict=tool_dict, tools=tools)
+                    )
+                    inflight_tasks[task] = (group_id, slot, name, environment)
 
                 if not inflight_tasks:
                     if stop_event.is_set():
@@ -437,7 +418,7 @@ class _AsyncRolloutLoop:
                     continue
 
                 for task in done:
-                    group_id, slot, name, environment, prompt = inflight_tasks.pop(task)
+                    group_id, slot, name, environment = inflight_tasks.pop(task)
                     free_slots.add(slot)
                     if environment is not None:
                         self._environment_pool[name].append(environment)
@@ -445,6 +426,7 @@ class _AsyncRolloutLoop:
                         raise task.exception()
 
                     (
+                        prompt,
                         prompt_ids,
                         completion,
                         completion_ids,
@@ -559,6 +541,37 @@ class _AsyncRolloutLoop:
             for _ in range(self.num_generations):
                 yield group_id, row
             group_id += 1
+
+    async def _reset_and_generate_one(
+        self, row: dict[str, Any], environment: object | None, tool_dict: dict[str, Callable], tools: list[Callable]
+    ) -> tuple[Messages, list[int], list[dict[str, str]], list[int], list[float], list[int], int, int]:
+        # Reset the environment BEFORE building the prompt and capture its initial observation (e.g. a task
+        # instruction). The reset() return was previously discarded, so an environment_factory whose task lives in
+        # the observation (not the dataset prompt) was generated against the bare prompt. Mirror GRPOTrainer: fold
+        # the observation into the last prompt message. reset() may be stochastic, so this is done per generation
+        # (each generation gets its own observation -> its own prompt and prompt_ids). `environment` is a control
+        # field in multi-environment mode, so it is not forwarded to `reset`.
+        observation = None
+        if environment is not None:
+            reset_kwargs = {k: v for k, v in row.items() if k != "environment"} if self._multi_environment else row
+            observation = environment.reset(**reset_kwargs)
+            # Envs may expose either a sync or an async (coroutine) reset.
+            if inspect.isawaitable(observation):
+                observation = await observation
+        prompt = row["prompt"]
+        if observation is not None:
+            # Rebuild the last message instead of mutating in place (as GRPOTrainer does): the
+            # same row is reused across the group's generations and across epochs. Normalize str vs
+            # list (multimodal) content the same way GRPOTrainer does before concatenating.
+            last = prompt[-1]
+            content = last["content"]
+            if isinstance(observation, list) and isinstance(content, str):
+                content = [{"type": "text", "text": content}]
+            if isinstance(observation, str) and isinstance(content, list):
+                observation = [{"type": "text", "text": observation}]
+            prompt = prompt[:-1] + [{**last, "content": content + observation}]
+        result = await self._generate_one(prompt, tool_dict=tool_dict, tools=tools)
+        return (prompt, *result)
 
     async def _generate_one(
         self, prompt: Messages, tool_dict: dict[str, Callable], tools: list[Callable]
